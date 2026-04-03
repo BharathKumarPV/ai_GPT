@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - User's unique ID
+    //   - email: string (required) - User's email address
+    //   - displayName: string (optional) - User's display name
+    //   - photoURL: string (optional) - URL to the user's profile photo
+    //   - createdAt: timestamp (required) - Timestamp of account creation
+    //   - updatedAt: timestamp (required) - Timestamp of last update
+    //
+    // Collection: users/{userId}/chats
+    // Document ID: {chatId}
+    // Fields:
+    //   - id: string (required) - Unique chat ID
+    //   - title: string (required) - Chat title
+    //   - model: string (required) - AI model used in the chat
+    //   - createdAt: timestamp (required) - Timestamp of chat creation
+    //   - updatedAt: timestamp (required) - Timestamp of last update
+    //
+    // Collection: users/{userId}/chats/{chatId}/messages
+    // Document ID: {messageId}
+    // Fields:
+    //   - id: string (required) - Unique message ID
+    //   - role: string (required) - Role of the message sender ('user' | 'model')
+    //   - text: string (required) - Message content
+    //   - createdAt: timestamp (required) - Timestamp of message creation
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Domain Validators
+    function isValidUser() {
+      return hasRequiredFields(['uid', 'email', 'createdAt', 'updatedAt']) &&
+             hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt']) &&
+             request.resource.data.uid is string && request.resource.data.uid.size() > 0 && request.resource.data.uid.size() <= 128 &&
+             request.resource.data.email is string && request.resource.data.email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+             (!('displayName' in request.resource.data) || (request.resource.data.displayName is string && request.resource.data.displayName.size() <= 100)) &&
+             (!('photoURL' in request.resource.data) || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 2048)) &&
+             request.resource.data.createdAt is timestamp &&
+             request.resource.data.updatedAt is timestamp;
+    }
+
+    function isValidChat() {
+      return hasRequiredFields(['id', 'title', 'model', 'createdAt', 'updatedAt']) &&
+             hasOnlyAllowedFields(['id', 'title', 'model', 'createdAt', 'updatedAt']) &&
+             request.resource.data.id is string && request.resource.data.id.size() > 0 && request.resource.data.id.size() <= 128 &&
+             request.resource.data.title is string && request.resource.data.title.size() <= 256 &&
+             request.resource.data.model is string && request.resource.data.model.size() <= 128 &&
+             request.resource.data.createdAt is timestamp &&
+             request.resource.data.updatedAt is timestamp;
+    }
+
+    function isValidMessage() {
+      return hasRequiredFields(['id', 'role', 'text', 'createdAt']) &&
+             hasOnlyAllowedFields(['id', 'role', 'text', 'createdAt', 'mediaUrl', 'mediaType', 'groundingUrls']) &&
+             request.resource.data.id is string && request.resource.data.id.size() > 0 && request.resource.data.id.size() <= 128 &&
+             request.resource.data.role in ['user', 'model'] &&
+             request.resource.data.text is string && request.resource.data.text.size() <= 1048576 && // 1MB limit
+             (!('mediaUrl' in request.resource.data) || (request.resource.data.mediaUrl is string && request.resource.data.mediaUrl.size() <= 1048576)) &&
+             (!('mediaType' in request.resource.data) || (request.resource.data.mediaType in ['image', 'video', 'audio'])) &&
+             (!('groundingUrls' in request.resource.data) || (request.resource.data.groundingUrls is list && request.resource.data.groundingUrls.size() <= 100)) &&
+             request.resource.data.createdAt is timestamp;
+    }
+
+    // Match Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser() && uidUnchanged();
+      allow update: if isOwner(userId) && isValidUser() && uidNotModified() && areImmutableFieldsUnchanged(['createdAt']);
+      allow delete: if isOwner(userId);
+
+      match /chats/{chatId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidChat();
+        allow update: if isOwner(userId) && isValidChat() && areImmutableFieldsUnchanged(['id', 'createdAt']);
+        allow delete: if isOwner(userId);
+
+        match /messages/{messageId} {
+          allow read: if isOwner(userId);
+          allow create: if isOwner(userId) && isValidMessage();
+          allow update: if isOwner(userId) && isValidMessage() && areImmutableFieldsUnchanged(['id', 'createdAt', 'role']);
+          allow delete: if isOwner(userId);
+        }
+      }
+    }
+  }
+}
